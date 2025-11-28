@@ -2,23 +2,24 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using System;
 using System.Collections;
+using System.Collections.Generic;
 
 public class GameFlowManager : MonoBehaviour
 {
     public static GameFlowManager I;
-
-    // Fired whenever a new active scene is set.
-    // string = name of the active scene.
     public static Action<string> OnSceneChanged;
 
     [Header("Fade")]
-    [SerializeField] CanvasGroup fader;
+    [SerializeField] CanvasGroup canvasFader;        // optional (UI)
+    [SerializeField] GameObject meshFaderObject;     // optional (custom blackout mesh)
     [SerializeField] float fadeTime = 0.35f;
+
+    List<Material> meshMaterials;
 
     [Header("Auto Boot (optional)")]
     [SerializeField] bool autoLoadOnStart = true;
     [SerializeField] string firstScene = "Scene00";
-    [SerializeField] float bootDelay = 0f; // seconds, e.g. show a logo before boot
+    [SerializeField] float bootDelay = 0f;
 
     string bootstrapSceneName;
 
@@ -28,8 +29,9 @@ public class GameFlowManager : MonoBehaviour
         {
             I = this;
             DontDestroyOnLoad(gameObject);
-            // Example: this is your master scene name
+
             bootstrapSceneName = SceneManager.GetActiveScene().name;
+            CacheMeshMaterials();
         }
         else
         {
@@ -37,9 +39,23 @@ public class GameFlowManager : MonoBehaviour
         }
     }
 
+    void CacheMeshMaterials()
+    {
+        meshMaterials = new List<Material>();
+
+        if (!meshFaderObject)
+            return;
+
+        var renderers = meshFaderObject.GetComponentsInChildren<Renderer>(true);
+        foreach (var r in renderers)
+        {
+            foreach (var m in r.materials)
+                meshMaterials.Add(m);
+        }
+    }
+
     void Start()
     {
-        // Announce whatever scene is currently active at startup (bootstrap scene)
         OnSceneChanged?.Invoke(SceneManager.GetActiveScene().name);
 
         if (autoLoadOnStart && !string.IsNullOrEmpty(firstScene))
@@ -51,32 +67,35 @@ public class GameFlowManager : MonoBehaviour
         if (bootDelay > 0f)
             yield return new WaitForSeconds(bootDelay);
 
-        // Only boot if the target scene is not already loaded
         if (!SceneManager.GetSceneByName(firstScene).isLoaded)
             yield return CoNext(firstScene);
     }
 
-    // Public API
-    public void Next(string sceneName) { StartCoroutine(CoNext(sceneName)); }
-    public void Boot(string sceneName) { StartCoroutine(CoNext(sceneName)); } // alias
+    public void Next(string sceneName)
+    {
+        StartCoroutine(CoNext(sceneName));
+    }
+
+    public void Boot(string sceneName)
+    {
+        StartCoroutine(CoNext(sceneName));
+    }
 
     IEnumerator CoNext(string sceneName)
     {
-        // Fade out
+        // Fade OUT
         yield return Fade(1f);
 
-        // Load additively if not already loaded
+        // Load destination scene if not yet loaded
         var scn = SceneManager.GetSceneByName(sceneName);
         if (!scn.isLoaded)
             yield return SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Additive);
 
-        // Make target active
+        // Set active
         SceneManager.SetActiveScene(SceneManager.GetSceneByName(sceneName));
-
-        // Notify listeners (UI, etc.) that the active scene changed
         OnSceneChanged?.Invoke(sceneName);
 
-        // Unload everything except the target scene, the bootstrap, and DontDestroyOnLoad
+        // Unload everything except bootstrap + dontdestroyonload + target
         for (int i = 0; i < SceneManager.sceneCount; i++)
         {
             var s = SceneManager.GetSceneAt(i);
@@ -84,25 +103,56 @@ public class GameFlowManager : MonoBehaviour
                 SceneManager.UnloadSceneAsync(s);
         }
 
-        // Fade in
+        // Fade IN
         yield return Fade(0f);
     }
 
     IEnumerator Fade(float target)
     {
-        float start = fader ? fader.alpha : 0f;
-        float t = 0f;
+        float startCanvas = canvasFader ? canvasFader.alpha : 0f;
 
+        // If mesh exists ¡÷ read its first material's alpha
+        float startMeshAlpha = 0f;
+        if (meshMaterials != null && meshMaterials.Count > 0)
+            startMeshAlpha = meshMaterials[0].color.a;
+
+        float t = 0f;
         while (t < fadeTime)
         {
             t += Time.unscaledDeltaTime;
-            if (fader)
-                fader.alpha = Mathf.Lerp(start, target, t / fadeTime);
+            float lerp = t / fadeTime;
+
+            // UI CanvasGroup fading
+            if (canvasFader)
+                canvasFader.alpha = Mathf.Lerp(startCanvas, target, lerp);
+
+            // Mesh-based fading (wallsBlack)
+            if (meshMaterials != null)
+            {
+                float newAlpha = Mathf.Lerp(startMeshAlpha, target, lerp);
+                foreach (var m in meshMaterials)
+                {
+                    Color c = m.color;
+                    c.a = newAlpha;
+                    m.color = c;
+                }
+            }
 
             yield return null;
         }
 
-        if (fader)
-            fader.alpha = target;
+        // Snap at end
+        if (canvasFader)
+            canvasFader.alpha = target;
+
+        if (meshMaterials != null)
+        {
+            foreach (var m in meshMaterials)
+            {
+                Color c = m.color;
+                c.a = target;
+                m.color = c;
+            }
+        }
     }
 }
